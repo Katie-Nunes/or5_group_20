@@ -363,85 +363,65 @@ def visualize_solution(instance, solution, title):
     plt.tight_layout()
     plt.show()
 
-def main():
-    global NUM_PAPERBOYS
-    NUM_PAPERBOYS = 4
-    instance = read_instance(EXCEL_FILE)
+def run_heuristic(instance, heuristic, name, results):
+    """Run a heuristic and store the results."""
+    print(f"\nRunning {name}...")
+    solution, time_taken = heuristic(instance)
+    results[name] = {
+        'solution': solution,
+        'Max Distance': solution['max_distance'],
+        'Time': time_taken
+    }
+    visualize_solution(instance, solution, name)
 
-    # Store results for comparison
-    results = {}
+def run_improvement(instance, solution, name, results):
+    """Run an improvement heuristic and store the results."""
+    print(f"\nImproving {name}...")
+    solution, time_taken = best_improvement(instance, solution)
+    results[f'Best Improvement ({name})'] = {
+        'solution': solution,
+        'Max Distance': solution['max_distance'],
+        'Time': time_taken
+    }
+    visualize_solution(instance, solution, f"Best Improvement ({name})")
 
+def run_simulated_annealing(instance, results):
+    """Run simulated annealing and store the results."""
     print("\nRunning Simulated Annealing with fresh random solution...")
-    # Generate a fresh random solution
     random_solution, _ = random_constructive(instance)
-    # Run simulated annealing starting from this random solution
-    solution, time_taken, progress_data = simulated_annealing(instance, random_solution, 100, 0.99, 10, method="random")
+    solution, time_taken, progress_data = simulated_annealing(instance, random_solution, 100, 0.99, 100, method="random")
     results['Simulated Annealing'] = {
+        'solution': solution,
         'Max Distance': solution['max_distance'],
         'Time': time_taken
     }
     visualize_solution(instance, solution, "Simulated Annealing")
     plot_annealing_progress(progress_data)
 
-    # 1. Random Constructive Heuristic
-    print("Running Random Constructive Heuristic...")
-    solution, time_taken = random_constructive(instance)
-    results['Random Constructive'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Random Constructive")
+def main():
+    global NUM_PAPERBOYS
+    NUM_PAPERBOYS = 4
+    instance = read_instance(EXCEL_FILE)
 
-    # 2. Best Improvement from Random Solution
-    print("\nImproving Random Solution...")
-    solution, time_taken = best_improvement(instance, solution)
-    results['Best Improvement (Random)'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Best Improvement (Random Initial)")
+    results = {}
 
-    # 3. Nearest Neighbor Heuristic
-    print("\nRunning Nearest Neighbor Heuristic...")
-    solution, time_taken = nearest_neighbor(instance)
-    results['Nearest Neighbor'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Nearest Neighbor")
+    run_simulated_annealing(instance, results)
 
-    # 4. Best Improvement from NN
-    print("\nImproving NN Solution...")
-    solution, time_taken = best_improvement(instance, solution)
-    results['Best Improvement (NN)'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Best Improvement (NN)")
+    heuristics = [
+        {'heuristic': random_constructive, 'name': 'Random Constructive'},
+        {'heuristic': nearest_neighbor, 'name': 'Nearest Neighbor'},
+        {'heuristic': nearest_neighbor_round_robin, 'name': 'Nearest Neighbor RR'}
+    ]
 
-    # 3. Nearest Neighbor Heuristic
-    print("\nRunning Nearest Neighbor Heuristic with Round Robin...")
-    solution, time_taken = nearest_neighbor_round_robin(instance)
-    results['Nearest Neighbor RR'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Nearest Neighbo with Round Robinr")
-
-    # 4. Best Improvement from NN
-    print("\nImproving Nearest Neighbuor Solution with Round Robin...")
-    solution, time_taken = best_improvement(instance, solution)
-    results['Best Improvement (NN) RR'] = {
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, "Best Improvement (NN) RR")
-
-
-    # 5. Simulated Annealing starting with a fresh random solution
+    solution = None
+    for heuristic in heuristics:
+        run_heuristic(instance, heuristic['heuristic'], heuristic['name'], results)
+        solution = results[heuristic['name']]['solution']  # assuming solution is stored in results
+        run_improvement(instance, solution, heuristic['name'], results)
 
     # Export best solution
-    export_solution(solution, "optimized_routes.xlsx")
+    best_solution = min(results, key=lambda x: results[x]['Max Distance'])
+    export_solution(results[best_solution]['solution'], "optimized_routes.xlsx")
 
     # Display results
     print("\n" + "=" * 50)
