@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import math
 import copy
 import numpy as np
+from tqdm import tqdm
 
 EXCEL_FILE = "Excel/paperboy_instance.xlsx"
 
@@ -134,7 +135,6 @@ def generate_swap_neighbors(route: list):
             neighbors.append(new_route)
     return neighbors
 
-
 def generate_move_neighbors(route: list):
     """Generate all possible move neighbors (relocate within same route)"""
     neighbors = []
@@ -149,7 +149,6 @@ def generate_move_neighbors(route: list):
                 neighbors.append(new_route)
     return neighbors
 
-# Updated dispatcher function
 def generate_neighbors(route_or_routes, neighborhood: str):
     """Generate all possible neighbors given a neighborhood structure"""
     if neighborhood == "2-opt":
@@ -185,22 +184,6 @@ def first_improvement_route(instance, route: list, neighborhood: str = "2-opt") 
             return new_route, new_dist
     return route, current_dist
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _apply_single_route_improvement(instance, solution, move_generator):
     routes = solution['routes']
     route_idx = random.randint(0, len(routes) - 1)
@@ -210,7 +193,6 @@ def _apply_single_route_improvement(instance, solution, move_generator):
         new_route = move_generator(route)
         routes[route_idx] = new_route
         solution['max_distance'], solution['route_distances'] = evaluate_solution(instance, routes)
-
 
 def random_neighbor(instance, solution, structure: str = None) -> dict:
     if structure is None:
@@ -231,16 +213,6 @@ def random_neighbor(instance, solution, structure: str = None) -> dict:
         solution['routes'][route_idx] = random.choice(neighbors)
         solution['max_distance'], solution['route_distances'] = evaluate_solution(instance, solution['routes'])
     return solution
-
-
-
-
-
-
-
-
-
-
 
 def improve_solution(instance, solution: dict, method: str = "best") -> tuple[dict, float]:
     start_time = time.time()
@@ -266,7 +238,7 @@ def improve_solution(instance, solution: dict, method: str = "best") -> tuple[di
     }
     return improved_solution, time.time() - start_time
 
-def simulated_annealing(instance, initial_solution, temp=100, cooling=0.99, iterations=100, method="2-opt"):
+def simulated_annealing(instance, initial_solution, temp=100, cooling=0.99, iterations=1000, method="2-opt"):
     start_time = time.time()
 
     current_solution = copy.deepcopy(initial_solution)
@@ -279,29 +251,38 @@ def simulated_annealing(instance, initial_solution, temp=100, cooling=0.99, iter
     temperatures = []
     step_counter = 0
 
-    while temp > 1:
-        for _ in range(iterations):
-            neighbor_solution = random_neighbor(instance, current_solution) #doesn't use method, get's a random one each iteration
-            neighbor_cost = neighbor_solution['max_distance']
+    # Calculate total steps for progress bar
+    n_loops = 0
+    t = temp
+    while t > 1:
+        n_loops += 1
+        t *= cooling
+    total_steps = n_loops * iterations
 
-            cost_diff = neighbor_cost - current_cost
-            if cost_diff < 0 or random.random() < math.exp(-cost_diff / temp):
-                current_solution = neighbor_solution
-                current_cost = neighbor_cost
-                if current_cost < best_solution['max_distance']:
-                    best_solution = copy.deepcopy(current_solution)
+    # Progress bar
+    with tqdm(total=total_steps, desc="Simulated Annealing") as pbar:
+        while temp > 1:
+            for _ in range(iterations):
+                neighbor_solution = random_neighbor(instance, current_solution)
+                neighbor_cost = neighbor_solution['max_distance']
 
-            # Record progress
-            steps.append(step_counter)
-            current_costs.append(current_cost)
-            best_costs.append(best_solution['max_distance'])
-            temperatures.append(temp)
-            step_counter += 1
+                cost_diff = neighbor_cost - current_cost
+                if cost_diff < 0 or random.random() < math.exp(-cost_diff / temp):
+                    current_solution = neighbor_solution
+                    current_cost = neighbor_cost
+                    if current_cost < best_solution['max_distance']:
+                        best_solution = copy.deepcopy(current_solution)
 
-        # Cool down the temperature
-        temp *= cooling
+                # Record progress
+                steps.append(step_counter)
+                current_costs.append(current_cost)
+                best_costs.append(best_solution['max_distance'])
+                temperatures.append(temp)
+                step_counter += 1
 
-    #best_solution, tt = improve_solution(instance, best_solution, "best")
+                pbar.update(1)  # Update progress bar
+
+            temp *= cooling
 
     progress_data = {
         'iterations': steps,
