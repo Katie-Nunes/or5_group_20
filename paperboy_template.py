@@ -292,7 +292,7 @@ def improve_solution(instance, solution: dict, method: str = "best") -> tuple[di
 
 
 
-def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=10, method="2-opt"):
+def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=300, method="2-opt"):
     start_time = time.time()
 
     current_solution = copy.deepcopy(initial_solution)
@@ -481,7 +481,7 @@ def run_simulated_annealing(instance, results):
     best_overall_data = None
     total_sa_time = 0
 
-    NUM_RUNS = 15
+    NUM_RUNS = 2
 
     for i in range(NUM_RUNS):
         print(f"\nRun {i + 1}/{NUM_RUNS}...")
@@ -506,7 +506,6 @@ def run_simulated_annealing(instance, results):
         'Time': total_sa_time  # Total time of all 10 runs
     }
 
-    best_improvement_route(instance, best_overall_sol, )
     print(best_overall_data)
     visualize_solution(instance, best_overall_sol, "Simulated Annealing (Best of 10 Runs)")
     plot_annealing_progress(best_overall_data)
