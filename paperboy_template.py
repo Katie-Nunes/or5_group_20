@@ -113,6 +113,37 @@ def nearest_neighbor(instance, round_robin=False):
 
     return solution, time.time() - start_time
 
+
+def apply_inter_route_transfer(solution):
+    """
+    Moves one random customer from one route to another.
+    Good for load balancing (minimizing max_distance).
+    """
+    routes = solution['routes']
+    num_routes = len(routes)
+
+    # 1. Identify routes that can essentially 'give' a customer (must have >1 location, i.e., depot + at least 1 customer)
+    possible_sources = [i for i, r in enumerate(routes) if len(r) > 1]
+    if not possible_sources:
+        return False  # No moves possible
+
+    # 2. Pick a source route and a customer to move (excluding depot at index 0)
+    src_r_idx = random.choice(possible_sources)
+    src_route = routes[src_r_idx]
+    cust_idx = random.randint(1, len(src_route) - 1)
+    customer = src_route.pop(cust_idx)
+
+    # 3. Pick a DIFFERENT target route
+    possible_targets = [i for i in range(num_routes) if i != src_r_idx]
+    tgt_r_idx = random.choice(possible_targets)
+    tgt_route = routes[tgt_r_idx]
+
+    # 4. Insert customer at random valid position in target (from index 1 to end)
+    insert_pos = random.randint(1, len(tgt_route))
+    tgt_route.insert(insert_pos, customer)
+
+    return True
+
 def generate_2opt_neighbors(route: list):
     """Generate all possible 2-opt neighbors for a route"""
     neighbors = []
@@ -135,7 +166,7 @@ def generate_swap_neighbors(route: list):
             neighbors.append(new_route)
     return neighbors
 
-def generate_move_neighbors(route: list):
+def generate_relocate_neighbors(route: list):
     """Generate all possible move neighbors (relocate within same route)"""
     neighbors = []
     n = len(route)
@@ -156,7 +187,7 @@ def generate_neighbors(route_or_routes, neighborhood: str):
     elif neighborhood == "swap":
         return generate_swap_neighbors(route_or_routes)
     elif neighborhood == "move":
-        return generate_move_neighbors(route_or_routes)
+        return generate_relocate_neighbors(route_or_routes)
 
 def best_improvement_route(instance, route: list, neighborhood: str = "2-opt") -> tuple[list, float]:
     """Apply best improvement to a single route using specified neighborhood"""
@@ -194,25 +225,46 @@ def _apply_single_route_improvement(instance, solution, move_generator):
         routes[route_idx] = new_route
         solution['max_distance'], solution['route_distances'] = evaluate_solution(instance, routes)
 
+
 def random_neighbor(instance, solution, structure: str = None) -> dict:
+    """
+    Generates exactly ONE neighbor solution efficiently.
+    Crucial: Creates a DEEP COPY so we don't corrupt the current solution.
+    """
+    # CRITICAL: Work on a copy, otherwise you modify the 'current' solution
+    # in the SA loop before deciding to accept it!
+    new_solution = copy.deepcopy(solution)
+
+    # If no structure specified, pick one.
+    # Weighting 'transfer' heavily to ensure load balancing happens.
     if structure is None:
-        structure = random.choice(["2-opt", "swap", "move", "relocate"])
+        structure = random.choices(
+            ["transfer", "2-opt", "relocate"],
+            weights=[0.4, 0.4, 0.2],  # 40% chance to try rebalancing routes
+            k=1
+        )[0]
 
-    if structure in ["2-opt", "swap", "move"]:
-        route_idx = random.randint(0, len(solution['routes']) - 1)
-        route = solution['routes'][route_idx]
+    moved = False
+    if structure == "transfer":
+        moved = apply_inter_route_transfer(new_solution)
+    elif structure == "2-opt":
+        moved = generate_2opt_neighbors(new_solution)
+    elif structure == "swap":
+        moved = generate_swap_neighbors(new_solution)
+    elif structure == "relocate":
+        moved = generate_relocate_neighbors(new_solution)
 
-        if len(route) > 3:
-            if structure == "2-opt":
-                neighbors = generate_2opt_neighbors(route)
-            elif structure == "swap":
-                neighbors = generate_swap_neighbors(route)
-            elif structure == "move":
-                neighbors = generate_move_neighbors(route)
+    # If the chosen move wasn't possible (e.g., route too short),
+    # try a transfer as fallback, or just return completely unchanged solution.
+    if not moved:
+        # fallback to ensure we don't get stuck if one operator fails
+        apply_inter_route_transfer(new_solution)
 
-        solution['routes'][route_idx] = random.choice(neighbors)
-        solution['max_distance'], solution['route_distances'] = evaluate_solution(instance, solution['routes'])
-    return solution
+        # Recalculate costs for the new state
+    new_solution['max_distance'], new_solution['route_distances'] = \
+        evaluate_solution(instance, new_solution['routes'])
+
+    return new_solution
 
 def improve_solution(instance, solution: dict, method: str = "best") -> tuple[dict, float]:
     start_time = time.time()
@@ -238,7 +290,9 @@ def improve_solution(instance, solution: dict, method: str = "best") -> tuple[di
     }
     return improved_solution, time.time() - start_time
 
-def simulated_annealing(instance, initial_solution, temp=100, cooling=0.99, iterations=1000, method="2-opt"):
+
+
+def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=10, method="2-opt"):
     start_time = time.time()
 
     current_solution = copy.deepcopy(initial_solution)
@@ -261,7 +315,7 @@ def simulated_annealing(instance, initial_solution, temp=100, cooling=0.99, iter
 
     # Progress bar
     with tqdm(total=total_steps, desc="Simulated Annealing") as pbar:
-        while temp > 1:
+        while temp > 0.01:
             for _ in range(iterations):
                 neighbor_solution = random_neighbor(instance, current_solution)
                 neighbor_cost = neighbor_solution['max_distance']
@@ -416,18 +470,47 @@ def run_heuristic(instance, heuristic, name, results):
     }
     visualize_solution(instance, solution, f"Best Improvement ({name})")
 
+
 def run_simulated_annealing(instance, results):
-    """Run simulated annealing and store the results."""
-    print("\nRunning Simulated Annealing with fresh random solution...")
-    random_solution, _ = random_constructive(instance) #### Should extract from already made one to be faster
-    solution, time_taken, progress_data = simulated_annealing(instance, random_solution)
-    results['Simulated Annealing'] = {
-        'solution': solution,
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
+    print("\n" + "=" * 40)
+    print("Running Simulated Annealing (10 Multi-Start)")
+    print("=" * 40)
+
+    best_overall_sol = None
+    best_overall_cost = float('inf')
+    best_overall_data = None
+    total_sa_time = 0
+
+    NUM_RUNS = 15
+
+    for i in range(NUM_RUNS):
+        print(f"\nRun {i + 1}/{NUM_RUNS}...")
+        # Start from diverse random points for better exploration
+        #initial_sol, _ = nearest_neighbor(instance)
+        initial_sol, _ = random_constructive(instance)
+
+        sol, time_taken, prog_data = simulated_annealing(instance, initial_sol)
+        total_sa_time += time_taken
+        print(f"  > Run {i + 1} finished. Cost: {sol['max_distance']:.1f}")
+
+        if sol['max_distance'] < best_overall_cost:
+            best_overall_cost = sol['max_distance']
+            best_overall_sol = sol
+            best_overall_data = prog_data
+
+    print(f"\nBest SA Cost found: {best_overall_cost:.1f}")
+
+    results['Simulated Annealing (Best of 10)'] = {
+        'solution': best_overall_sol,
+        'Max Distance': best_overall_sol['max_distance'],
+        'Time': total_sa_time  # Total time of all 10 runs
     }
-    visualize_solution(instance, solution, "Simulated Annealing")
-    plot_annealing_progress(progress_data)
+
+    best_improvement_route(instance, best_overall_sol, )
+    print(best_overall_data)
+    visualize_solution(instance, best_overall_sol, "Simulated Annealing (Best of 10 Runs)")
+    plot_annealing_progress(best_overall_data)
+
 
 def main():
     global NUM_PAPERBOYS
