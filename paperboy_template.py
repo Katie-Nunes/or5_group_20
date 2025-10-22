@@ -9,6 +9,10 @@ from tqdm import tqdm
 
 EXCEL_FILE = "Excel/paperboy_instance.xlsx"
 
+# Ran it overnight with 100 simulations with 300 iterations, current best is this
+# Best SA Cost found: 1453.0
+# {'routes': [[0, 82, 74, 77, 103, 99, 100, 110, 107, 108, 116, 119, 117, 120, 118, 115, 114, 113, 109, 105, 106, 98, 81, 68, 58, 57, 62, 66, 63, 64, 56, 49, 51, 79], [0, 85, 55, 45, 36, 30, 25, 13, 10, 15, 17, 22, 24, 32, 34, 44, 50, 53, 54, 60, 67, 70, 76, 75, 78, 80, 90, 92, 97, 112, 93, 94, 87, 88, 95, 102, 101], [0, 83, 84, 71, 86, 96, 111, 104, 89, 91, 72, 65, 59, 48, 47, 39, 37, 42, 40, 38, 26, 21, 18, 2, 5], [0, 73, 69, 61, 33, 14, 6, 1, 8, 3, 4, 11, 12, 28, 23, 20, 19, 16, 9, 7, 29, 46, 43, 41, 35, 27, 31, 52]], 'max_distance': 1453, 'route_distances': [1431, 1453, 1446, 1452]}
+
 def read_instance(filename):
     """Read Excel instance and return structured data including distance matrix"""
     df = pd.read_excel(filename)
@@ -292,7 +296,7 @@ def improve_solution(instance, solution: dict, method: str = "best") -> tuple[di
 
 
 
-def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=300, method="2-opt"):
+def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=1000, method="2-opt"):
     start_time = time.time()
 
     current_solution = copy.deepcopy(initial_solution)
@@ -481,7 +485,7 @@ def run_simulated_annealing(instance, results):
     best_overall_data = None
     total_sa_time = 0
 
-    NUM_RUNS = 2
+    NUM_RUNS = 1
 
     for i in range(NUM_RUNS):
         print(f"\nRun {i + 1}/{NUM_RUNS}...")
@@ -506,7 +510,7 @@ def run_simulated_annealing(instance, results):
         'Time': total_sa_time  # Total time of all 10 runs
     }
 
-    print(best_overall_data)
+    print(best_overall_sol)
     visualize_solution(instance, best_overall_sol, "Simulated Annealing (Best of 10 Runs)")
     plot_annealing_progress(best_overall_data)
 
