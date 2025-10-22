@@ -1,21 +1,43 @@
-import random
-import time
-import pandas as pd
-import matplotlib.pyplot as plt
-import math
-import copy
-import numpy as np
-from tqdm import tqdm
-
-EXCEL_FILE = "Excel/paperboy_instance.xlsx"
-
-# Ran it overnight with 100 simulations with 300 iterations, current best is this
 # Best SA Cost found: 1453.0
 # {'routes': [[0, 82, 74, 77, 103, 99, 100, 110, 107, 108, 116, 119, 117, 120, 118, 115, 114, 113, 109, 105, 106, 98, 81, 68, 58, 57, 62, 66, 63, 64, 56, 49, 51, 79], [0, 85, 55, 45, 36, 30, 25, 13, 10, 15, 17, 22, 24, 32, 34, 44, 50, 53, 54, 60, 67, 70, 76, 75, 78, 80, 90, 92, 97, 112, 93, 94, 87, 88, 95, 102, 101], [0, 83, 84, 71, 86, 96, 111, 104, 89, 91, 72, 65, 59, 48, 47, 39, 37, 42, 40, 38, 26, 21, 18, 2, 5], [0, 73, 69, 61, 33, 14, 6, 1, 8, 3, 4, 11, 12, 28, 23, 20, 19, 16, 9, 7, 29, 46, 43, 41, 35, 27, 31, 52]], 'max_distance': 1453, 'route_distances': [1431, 1453, 1446, 1452]}
 
-def read_instance(filename):
-    """Read Excel instance and return structured data including distance matrix"""
-    df = pd.read_excel(filename)
+import copy
+import math
+import random
+import time
+from typing import List, Dict, Tuple, Any, Callable
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+# =========================================
+# CONFIGURATION
+# =========================================
+CONFIG = {
+    'excel_file': "Excel/paperboy_instance.xlsx",
+    'num_paperboys': 4,
+    'sa_iterations': 5,  # Iterations per temperature level
+    'sa_temp': 100,  # Starting temperature
+    'sa_cooling': 0.995,  # Cooling rate
+    'sa_min_temp': 0.01,  # Stopping temperature
+    'num_sa_runs': 1,  # Number of multi-starts for SA
+    'show_plots': False  # Set to False to skip intermediate plots
+}
+
+
+# =========================================
+# DATA MODEL & EVALUATION
+# =========================================
+
+def read_instance(filename: str, num_paperboys: int) -> Dict[str, Any]:
+    """Read Excel instance and return structured data including distance matrix."""
+    try:
+        df = pd.read_excel(filename)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Could not find {filename}. Please check paths.")
+
     locations = []
     depot_idx = None
     for idx, row in df.iterrows():
@@ -24,18 +46,23 @@ def read_instance(filename):
         if row['name'] == 'start':
             depot_idx = idx
 
+    if depot_idx is None:
+        raise ValueError("No location named 'start' found in Excel file.")
+
     instance = {
         'locations': locations,
         'depot': depot_idx,
-        'num_paperboys': NUM_PAPERBOYS,
+        'num_paperboys': num_paperboys,
+        'num_locations': len(locations)
     }
-    instance['dist_matrix'] = compute_distance_matrix(instance)
+    instance['dist_matrix'] = _compute_distance_matrix(instance)
     return instance
 
-def compute_distance_matrix(instance):
-    """Compute Manhattan distance matrix for all locations"""
+
+def _compute_distance_matrix(instance: Dict[str, Any]) -> List[List[float]]:
+    """Compute Manhattan distance matrix for all locations."""
     n = len(instance['locations'])
-    matrix = [[0] * n for _ in range(n)]
+    matrix = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
             dist = abs(instance['locations'][i]['x'] - instance['locations'][j]['x']) + \
@@ -43,505 +70,317 @@ def compute_distance_matrix(instance):
             matrix[i][j] = matrix[j][i] = dist
     return matrix
 
-def route_distance(instance, route):
-    """Calculate total Manhattan distance for a route"""
-    return sum(instance['dist_matrix'][route[i]][route[i + 1]]
-               for i in range(len(route) - 1))
 
-def evaluate_solution(instance, routes):
-    """Calculate max route distance and individual route distances"""
-    route_dists = [route_distance(instance, route) for route in routes]
-    return max(route_dists), route_dists
+def get_route_distance(instance: Dict[str, Any], route: List[int]) -> float:
+    """Calculate total Manhattan distance for a single route."""
+    dist_matrix = instance['dist_matrix']
+    return sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
 
-def random_constructive(instance):
-    """Generate solution using random assignment"""
-    start_time = time.time()
-    indices = [i for i in range(len(instance['locations'])) if i != instance['depot']]
-    random.shuffle(indices)
 
-    routes = [[] for _ in range(instance['num_paperboys'])]
-    for i, idx in enumerate(indices):
-        routes[i % instance['num_paperboys']].append(idx)
-    for route in routes:
-        route.insert(0, instance['depot'])
+def evaluate_solution(instance: Dict[str, Any], routes: List[List[int]]) -> Tuple[float, List[float]]:
+    """
+    Calculate max route distance (objective) and individual route distances.
+    Objective: Minimax (minimize the longest single route).
+    """
+    route_dists = [get_route_distance(instance, route) for route in routes]
+    return (max(route_dists) if route_dists else 0.0), route_dists
 
-    max_dist, route_dists = evaluate_solution(instance, routes)
-    solution = {
-        'routes': routes,
-        'max_distance': max_dist,
-        'route_distances': route_dists
-    }
-    return solution, time.time() - start_time
 
-def nearest_neighbor(instance, round_robin=False):
+# =========================================
+# CONSTRUCTIVE HEURISTICS
+# =========================================
+
+def random_constructive(instance: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate solution using random assignment."""
     start_time = time.time()
     depot = instance['depot']
-    unvisited = set(range(len(instance['locations']))) - {depot}
+    customers = [i for i in range(instance['num_locations']) if i != depot]
+    random.shuffle(customers)
+
+    routes = [[depot] for _ in range(instance['num_paperboys'])]
+    for i, cust_idx in enumerate(customers):
+        routes[i % instance['num_paperboys']].append(cust_idx)
+
+    max_dist, route_dists = evaluate_solution(instance, routes)
+    return {
+        'routes': routes,
+        'max_distance': max_dist,
+        'route_distances': route_dists,
+        'time': time.time() - start_time
+    }
+
+
+def nearest_neighbor(instance: Dict[str, Any], round_robin: bool = False) -> Dict[str, Any]:
+    """
+    Nearest Neighbor construction.
+    If round_robin=True: Paperboys take turns picking their nearest available customer.
+    If round_robin=False: The globally nearest (paperboy, customer) pair is chosen iteratively.
+    """
+    start_time = time.time()
+    depot = instance['depot']
+    unvisited = set(range(instance['num_locations'])) - {depot}
     m = instance['num_paperboys']
     routes = [[depot] for _ in range(m)]
     current_positions = [depot] * m
+    dist_matrix = instance['dist_matrix']
 
     if round_robin:
-        pb = 0
+        pb_idx = 0
         while unvisited:
-            # Pick nearest customer for the current paperboy
-            pos = current_positions[pb]
-            best_customer = min(unvisited, key=lambda c: instance['dist_matrix'][pos][c])
-            routes[pb].append(best_customer)
-            current_positions[pb] = best_customer
+            pos = current_positions[pb_idx]
+            best_customer = min(unvisited, key=lambda c: dist_matrix[pos][c])
+            routes[pb_idx].append(best_customer)
+            current_positions[pb_idx] = best_customer
             unvisited.remove(best_customer)
-            pb = (pb + 1) % m
+            pb_idx = (pb_idx + 1) % m
     else:
         while unvisited:
-            # Find globally nearest customer-paperboy pair
-            min_dist = float('inf')
-            best_paperboy, best_customer = None, None
-
-            for pb_idx, pos in enumerate(current_positions):
+            best_dist = float('inf')
+            best_pb_idx, best_customer = -1, -1
+            for pb_idx in range(m):
+                pos = current_positions[pb_idx]
                 for customer in unvisited:
-                    dist = instance['dist_matrix'][pos][customer]
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_paperboy, best_customer = pb_idx, customer
-
-            routes[best_paperboy].append(best_customer)
-            current_positions[best_paperboy] = best_customer
+                    dist = dist_matrix[pos][customer]
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_pb_idx, best_customer = pb_idx, customer
+            routes[best_pb_idx].append(best_customer)
+            current_positions[best_pb_idx] = best_customer
             unvisited.remove(best_customer)
 
     max_dist, route_dists = evaluate_solution(instance, routes)
-    solution = {
+    return {
         'routes': routes,
         'max_distance': max_dist,
-        'route_distances': route_dists
+        'route_distances': route_dists,
+        'time': time.time() - start_time
     }
 
-    return solution, time.time() - start_time
 
+# =========================================
+# LOCAL SEARCH & METAHEURISTICS
+# =========================================
 
-def apply_inter_route_transfer(solution):
-    """
-    Moves one random customer from one route to another.
-    Good for load balancing (minimizing max_distance).
-    """
-    routes = solution['routes']
-    num_routes = len(routes)
-
-    # 1. Identify routes that can essentially 'give' a customer (must have >1 location, i.e., depot + at least 1 customer)
-    possible_sources = [i for i, r in enumerate(routes) if len(r) > 1]
-    if not possible_sources:
-        return False  # No moves possible
-
-    # 2. Pick a source route and a customer to move (excluding depot at index 0)
-    src_r_idx = random.choice(possible_sources)
-    src_route = routes[src_r_idx]
-    cust_idx = random.randint(1, len(src_route) - 1)
-    customer = src_route.pop(cust_idx)
-
-    # 3. Pick a DIFFERENT target route
-    possible_targets = [i for i in range(num_routes) if i != src_r_idx]
-    tgt_r_idx = random.choice(possible_targets)
-    tgt_route = routes[tgt_r_idx]
-
-    # 4. Insert customer at random valid position in target (from index 1 to end)
-    insert_pos = random.randint(1, len(tgt_route))
-    tgt_route.insert(insert_pos, customer)
-
-    return True
-
-def generate_2opt_neighbors(route: list):
-    """Generate all possible 2-opt neighbors for a route"""
+def _generate_2opt_neighbors(route: List[int]) -> List[List[int]]:
+    """Generate all 2-opt neighbors for a route (deterministic)."""
     neighbors = []
     n = len(route)
-
-    for i in range(1, n - 2):
-        for j in range(i + 1, n - 1):
-            neighbors.append(route[:i] + list(reversed(route[i:j + 1])) + route[j + 1:])
-    return neighbors
-
-def generate_swap_neighbors(route: list):
-    """Generate all possible swap neighbors for a route"""
-    neighbors = []
-    n = len(route)
-
     for i in range(1, n - 1):
-        for j in range(i + 1, n - 1):
-            new_route = route.copy()
-            new_route[i], new_route[j] = new_route[j], new_route[i]
-            neighbors.append(new_route)
+        for j in range(i + 1, n):
+            neighbors.append(route[:i] + route[i:j + 1][::-1] + route[j + 1:])
     return neighbors
 
-def generate_relocate_neighbors(route: list):
-    """Generate all possible move neighbors (relocate within same route)"""
-    neighbors = []
-    n = len(route)
 
-    for i in range(1, n - 1):
-        for j in range(1, n - 1):
-            if i != j:
-                new_route = route.copy()
-                node = new_route.pop(i)
-                new_route.insert(j, node)
-                neighbors.append(new_route)
-    return neighbors
-
-def generate_neighbors(route_or_routes, neighborhood: str):
-    """Generate all possible neighbors given a neighborhood structure"""
-    if neighborhood == "2-opt":
-        return generate_2opt_neighbors(route_or_routes)
-    elif neighborhood == "swap":
-        return generate_swap_neighbors(route_or_routes)
-    elif neighborhood == "move":
-        return generate_relocate_neighbors(route_or_routes)
-
-def best_improvement_route(instance, route: list, neighborhood: str = "2-opt") -> tuple[list, float]:
-    """Apply best improvement to a single route using specified neighborhood"""
-    best_route = route
-    best_dist = route_distance(instance, route)
-
-    neighbors = generate_neighbors(route, neighborhood)
-
-    for new_route in neighbors:
-        new_dist = route_distance(instance, new_route)
-        if new_dist < best_dist:
-            best_route = new_route
-            best_dist = new_dist
-    return best_route, best_dist
-
-def first_improvement_route(instance, route: list, neighborhood: str = "2-opt") -> tuple[list, float]:
-    """Apply first improvement to a single route using specified neighborhood"""
-    current_dist = route_distance(instance, route)
-
-    neighbors = generate_neighbors(route, neighborhood)
-
-    for new_route in neighbors:
-        new_dist = route_distance(instance, new_route)
-        if new_dist < current_dist:
-            return new_route, new_dist
-    return route, current_dist
-
-def _apply_single_route_improvement(instance, solution, move_generator):
-    routes = solution['routes']
-    route_idx = random.randint(0, len(routes) - 1)
-    route = routes[route_idx]
-
-    if len(route) > 3:
-        new_route = move_generator(route)
-        routes[route_idx] = new_route
-        solution['max_distance'], solution['route_distances'] = evaluate_solution(instance, routes)
-
-
-def random_neighbor(instance, solution, structure: str = None) -> dict:
-    """
-    Generates exactly ONE neighbor solution efficiently.
-    Crucial: Creates a DEEP COPY so we don't corrupt the current solution.
-    """
-    # CRITICAL: Work on a copy, otherwise you modify the 'current' solution
-    # in the SA loop before deciding to accept it!
-    new_solution = copy.deepcopy(solution)
-
-    # If no structure specified, pick one.
-    # Weighting 'transfer' heavily to ensure load balancing happens.
-    if structure is None:
-        structure = random.choices(
-            ["transfer", "2-opt", "relocate"],
-            weights=[0.4, 0.4, 0.2],  # 40% chance to try rebalancing routes
-            k=1
-        )[0]
-
-    moved = False
-    if structure == "transfer":
-        moved = apply_inter_route_transfer(new_solution)
-    elif structure == "2-opt":
-        moved = generate_2opt_neighbors(new_solution)
-    elif structure == "swap":
-        moved = generate_swap_neighbors(new_solution)
-    elif structure == "relocate":
-        moved = generate_relocate_neighbors(new_solution)
-
-    # If the chosen move wasn't possible (e.g., route too short),
-    # try a transfer as fallback, or just return completely unchanged solution.
-    if not moved:
-        # fallback to ensure we don't get stuck if one operator fails
-        apply_inter_route_transfer(new_solution)
-
-        # Recalculate costs for the new state
-    new_solution['max_distance'], new_solution['route_distances'] = \
-        evaluate_solution(instance, new_solution['routes'])
-
-    return new_solution
-
-def improve_solution(instance, solution: dict, method: str = "best") -> tuple[dict, float]:
+def improve_solution_deterministically(instance: Dict[str, Any], solution: Dict[str, Any]) -> Dict[str, Any]:
+    """Applies Best-Improvement 2-opt to EACH route individually until local optimum."""
     start_time = time.time()
     routes = copy.deepcopy(solution["routes"])
 
-    if method == "best":
-        for idx, route in enumerate(routes):
-            if len(route) > 3:  # Only improve if possible
-                improved_route, _ = best_improvement_route(instance, route)
-                routes[idx] = improved_route
+    for r_idx, route in enumerate(routes):
+        if len(route) < 4: continue
+        improved = True
+        while improved:
+            improved = False
+            best_dist = get_route_distance(instance, route)
+            best_route = route
+            for neighbor in _generate_2opt_neighbors(route):
+                dist = get_route_distance(instance, neighbor)
+                if dist < best_dist - 1e-6:
+                    best_dist = dist
+                    best_route = neighbor
+                    improved = True
+            route = best_route
+        routes[r_idx] = route
 
-    elif method == "first":
-        for idx, route in enumerate(routes):
-            if len(route) > 3:
-                improved_route, _ = first_improvement_route(instance, route)
-                routes[idx] = improved_route
-    # Evaluate final solution
     max_dist, route_dists = evaluate_solution(instance, routes)
-    improved_solution = {
-        "routes": routes,
-        "max_distance": max_dist,
-        "route_distances": route_dists
+    return {
+        'routes': routes,
+        'max_distance': max_dist,
+        'route_distances': route_dists,
+        'time': time.time() - start_time + solution.get('time', 0)
     }
-    return improved_solution, time.time() - start_time
 
 
+def _random_transfer(routes: List[List[int]]) -> bool:
+    """Move a customer from one route to another."""
+    donors = [i for i, r in enumerate(routes) if len(r) > 2]
+    if len(donors) < 1 or len(routes) < 2: return False
+    src = random.choice(donors)
+    dest = random.choice([i for i in range(len(routes)) if i != src])
+    cust = routes[src].pop(random.randint(1, len(routes[src]) - 1))
+    routes[dest].insert(random.randint(1, len(routes[dest])), cust)
+    return True
 
-def simulated_annealing(instance, initial_solution, temp=100, cooling=0.995, iterations=1000, method="2-opt"):
-    start_time = time.time()
 
-    current_solution = copy.deepcopy(initial_solution)
-    best_solution = copy.deepcopy(initial_solution)
-    current_cost = best_solution['max_distance']
+def _random_2opt(routes: List[List[int]]) -> bool:
+    """Apply 2-opt to a single random route."""
+    candidates = [i for i, r in enumerate(routes) if len(r) >= 4]
+    if not candidates: return False
+    r_idx = random.choice(candidates)
+    route = routes[r_idx]
+    i, j = sorted(random.sample(range(len(route)), 2))
+    if i == 0: i = 1
+    if i >= j: return False
+    routes[r_idx] = route[:i] + route[i:j + 1][::-1] + route[j + 1:]
+    return True
 
-    steps = []
-    current_costs = []
-    best_costs = []
-    temperatures = []
-    step_counter = 0
 
-    # Calculate total steps for progress bar
-    n_loops = 0
-    t = temp
-    while t > 1:
-        n_loops += 1
-        t *= cooling
-    total_steps = n_loops * iterations
+def simulated_annealing(instance: Dict[str, Any], initial_solution: Dict[str, Any]) -> Tuple[
+    Dict[str, Any], Dict[str, List]]:
+    current_sol = copy.deepcopy(initial_solution)
+    best_sol = copy.deepcopy(initial_solution)
+    current_cost = current_sol['max_distance']
+    best_cost = best_sol['max_distance']
 
-    # Progress bar
+    temp = CONFIG['sa_temp']
+    history = {'iterations': [], 'current_costs': [], 'best_costs': [], 'temperatures': []}
+    step = 0
+    total_steps = int(math.log(CONFIG['sa_min_temp'] / temp) / math.log(CONFIG['sa_cooling'])) * CONFIG['sa_iterations']
+
     with tqdm(total=total_steps, desc="Simulated Annealing") as pbar:
-        while temp > 0.01:
-            for _ in range(iterations):
-                neighbor_solution = random_neighbor(instance, current_solution)
-                neighbor_cost = neighbor_solution['max_distance']
+        while temp > CONFIG['sa_min_temp']:
+            for _ in range(CONFIG['sa_iterations']):
+                neighbor = copy.deepcopy(current_sol)
+                # Higher weight on transfer for load balancing
+                move_type = random.choices(['transfer', '2opt'], weights=[0.6, 0.4], k=1)[0]
 
-                cost_diff = neighbor_cost - current_cost
-                if cost_diff < 0 or random.random() < math.exp(-cost_diff / temp):
-                    current_solution = neighbor_solution
-                    current_cost = neighbor_cost
-                    if current_cost < best_solution['max_distance']:
-                        best_solution = copy.deepcopy(current_solution)
+                if move_type == 'transfer':
+                    if not _random_transfer(neighbor['routes']): _random_2opt(neighbor['routes'])
+                else:
+                    if not _random_2opt(neighbor['routes']): _random_transfer(neighbor['routes'])
 
-                # Record progress
-                steps.append(step_counter)
-                current_costs.append(current_cost)
-                best_costs.append(best_solution['max_distance'])
-                temperatures.append(temp)
-                step_counter += 1
+                n_max, n_dists = evaluate_solution(instance, neighbor['routes'])
+                neighbor['max_distance'] = n_max
+                neighbor['route_distances'] = n_dists
 
-                pbar.update(1)  # Update progress bar
+                delta = n_max - current_cost
+                if delta < 0 or random.random() < math.exp(-delta / temp):
+                    current_sol = neighbor
+                    current_cost = n_max
+                    if current_cost < best_cost:
+                        best_sol = copy.deepcopy(current_sol)
+                        best_cost = current_cost
 
-            temp *= cooling
+                if step % 50 == 0:
+                    history['iterations'].append(step)
+                    history['current_costs'].append(current_cost)
+                    history['best_costs'].append(best_cost)
+                    history['temperatures'].append(temp)
+                step += 1
+                pbar.update(1)
+            temp *= CONFIG['sa_cooling']
+    return best_sol, history
 
-    progress_data = {
-        'iterations': steps,
-        'current_costs': current_costs,
-        'best_costs': best_costs,
-        'temperatures': temperatures
-    }
-    return best_solution, time.time() - start_time, progress_data
 
-def plot_annealing_progress(history):
-    """
-    Plot current cost, best cost, and temperature from history.
-    X-axis (iteration) is in logarithmic scale.
-    """
-    iters = np.array(history['iterations'])
-    current_costs = np.array(history['current_costs'])
-    best_costs = np.array(history['best_costs'])
-    temperatures = np.array(history['temperatures'])
+# =========================================
+# VISUALIZATION & IO
+# =========================================
 
-    # Filter out iteration 0 or negative values if any (log undefined)
-    mask = iters > 0
-    if not mask.any():
-        mask = iters >= 0  # Fallback if all iterations start at 0
-
-    iters = iters[mask]
-    current_costs = current_costs[mask]
-    best_costs = best_costs[mask]
-    temperatures = temperatures[mask]
-
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-
-    # Use log scale for x-axis
-    ax1.set_xscale('log')
-
-    # Plot costs
-    ax1.plot(iters, current_costs, label="Current Cost", color='tab:blue', alpha=0.7, marker='.', linestyle='-',
-             markersize=2)
-    ax1.plot(iters, best_costs, label="Best Cost", color='tab:green', linewidth=2)
-    ax1.set_xlabel("Iteration (log scale)")
-    ax1.set_ylabel("Max Distance (Cost)", color='tab:blue')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
-    ax1.grid(True, linestyle='--', alpha=0.5, which='both')
-
-    # Secondary y-axis for temperature
-    ax2 = ax1.twinx()
-    ax2.plot(iters, temperatures, label="Temperature", color='tab:red', linestyle='--', alpha=0.8)
-    ax2.set_ylabel("Temperature", color='tab:red')
-    ax2.tick_params(axis='y', labelcolor='tab:red')
-
-    # Legends
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='lower left' if len(iters) > 1 else 'upper right')
-
-    plt.title("Simulated Annealing Progress")
-    plt.tight_layout()
-    plt.show()
-
-def export_solution(solution, filename):
-    """Export solution routes to Excel file"""
-    data = []
-    for i, route in enumerate(solution['routes']):
-        for j, loc_idx in enumerate(route):
-            data.append({
-                'Paperboy': i + 1,
-                'Sequence': j + 1,
-                'Customer': loc_idx
-            })
-    pd.DataFrame(data).to_excel(filename, index=False)
-
-def visualize_solution(instance, solution, title):
-    """Plot routes using Manhattan-style visualization"""
+def visualize_solution(instance: Dict[str, Any], solution: Dict[str, Any], title: str):
+    if not CONFIG['show_plots']: return
     plt.figure(figsize=(10, 8))
-    colors = plt.cm.tab10.colors
-
-    # Plot locations
-    for idx, loc in enumerate(instance['locations']):
-        plt.scatter(loc['x'], loc['y'], s=100, zorder=3)
-        plt.text(loc['x'], loc['y'], loc['name'],
-                 ha='center', va='center', fontsize=9)
-
-    # Plot depot
-    depot = instance['locations'][instance['depot']]
-    plt.scatter(depot['x'], depot['y'], s=300, c='orange',
-                edgecolors='black', zorder=4, label='Depot')
-    plt.text(depot['x'], depot['y'], depot['name'],
-             ha='center', va='center', fontsize=11, fontweight='bold')
-
-    # Plot routes
+    cmap = plt.cm.get_cmap('tab10')
+    for loc in instance['locations']:
+        plt.scatter(loc['x'], loc['y'], c='grey', alpha=0.3, s=30)
     for i, route in enumerate(solution['routes']):
-        color = colors[i % len(colors)]
+        color = cmap(i % 10)
         for j in range(len(route) - 1):
-            x1, y1 = instance['locations'][route[j]]['x'], instance['locations'][route[j]]['y']
-            x2, y2 = instance['locations'][route[j + 1]]['x'], instance['locations'][route[j + 1]]['y']
-
-            # Draw Manhattan path
-            plt.plot([x1, x2], [y1, y1], color=color, linewidth=1.5, zorder=2)
-            plt.plot([x2, x2], [y1, y2], color=color, linewidth=1.5, zorder=2)
-
-            # Add direction indicator
-            if j < len(route) - 2:
-                plt.scatter(x2, y1, color=color, s=30, zorder=5)
-
-    plt.title(f"{title}\nMax Distance: {solution['max_distance']:.1f}, Paperboys: {instance['num_paperboys']}")
-    plt.xlabel("X Coordinate")
-    plt.ylabel("Y Coordinate")
-    plt.grid(True)
+            p1, p2 = instance['locations'][route[j]], instance['locations'][route[j + 1]]
+            plt.plot([p1['x'], p2['x']], [p1['y'], p1['y']], color=color, lw=2, alpha=0.8)
+            plt.plot([p2['x'], p2['x']], [p1['y'], p2['y']], color=color, lw=2, alpha=0.8)
+        rx = [instance['locations'][n]['x'] for n in route if n != instance['depot']]
+        ry = [instance['locations'][n]['y'] for n in route if n != instance['depot']]
+        plt.scatter(rx, ry, color=color, s=40, zorder=3, label=f'P{i + 1}: {solution["route_distances"][i]:.0f}')
+    depot = instance['locations'][instance['depot']]
+    plt.scatter(depot['x'], depot['y'], s=150, c='yellow', edgecolors='k', marker='*', zorder=5)
+    plt.title(f"{title}\nMax Dist: {solution['max_distance']:.1f}")
     plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
 
-def run_heuristic(instance, heuristic, name, results):
-    """Run a heuristic and store the results."""
-    print(f"\nRunning {name}...")
-    if heuristic == "nearest_neighbor_RR":
-        solution, time_taken = nearest_neighbor(instance, round_robin=True)
-    else:
-        solution, time_taken = heuristic(instance)
-    results[name] = {
-        'solution': solution,
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, name)
 
-    solution, time_taken = improve_solution(instance, solution)
-    results[f'Best Improvement ({name})'] = {
-        'solution': solution,
-        'Max Distance': solution['max_distance'],
-        'Time': time_taken
-    }
-    visualize_solution(instance, solution, f"Best Improvement ({name})")
+def plot_sa_progress(history: Dict[str, List]):
+    if not CONFIG['show_plots'] or not history: return
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(history['iterations'], history['current_costs'], color='tab:blue', alpha=0.3, label='Current')
+    ax1.plot(history['iterations'], history['best_costs'], color='navy', lw=2, label='Best Found')
+    ax1.set_ylabel('Max Distance', color='tab:blue')
+    ax2 = ax1.twinx()
+    ax2.plot(history['iterations'], history['temperatures'], color='tab:red', ls='--', alpha=0.5, label='Temp')
+    ax2.set_ylabel('Temperature', color='tab:red')
+    plt.title("SA Progress")
+    plt.show()
 
 
-def run_simulated_annealing(instance, results):
-    print("\n" + "=" * 40)
-    print("Running Simulated Annealing (10 Multi-Start)")
-    print("=" * 40)
-
-    best_overall_sol = None
-    best_overall_cost = float('inf')
-    best_overall_data = None
-    total_sa_time = 0
-
-    NUM_RUNS = 1
-
-    for i in range(NUM_RUNS):
-        print(f"\nRun {i + 1}/{NUM_RUNS}...")
-        # Start from diverse random points for better exploration
-        #initial_sol, _ = nearest_neighbor(instance)
-        initial_sol, _ = random_constructive(instance)
-
-        sol, time_taken, prog_data = simulated_annealing(instance, initial_sol)
-        total_sa_time += time_taken
-        print(f"  > Run {i + 1} finished. Cost: {sol['max_distance']:.1f}")
-
-        if sol['max_distance'] < best_overall_cost:
-            best_overall_cost = sol['max_distance']
-            best_overall_sol = sol
-            best_overall_data = prog_data
-
-    print(f"\nBest SA Cost found: {best_overall_cost:.1f}")
-
-    results['Simulated Annealing (Best of 10)'] = {
-        'solution': best_overall_sol,
-        'Max Distance': best_overall_sol['max_distance'],
-        'Time': total_sa_time  # Total time of all 10 runs
-    }
-
-    print(best_overall_sol)
-    visualize_solution(instance, best_overall_sol, "Simulated Annealing (Best of 10 Runs)")
-    plot_annealing_progress(best_overall_data)
-
+# =========================================
+# MAIN
+# =========================================
 
 def main():
-    global NUM_PAPERBOYS
-    NUM_PAPERBOYS = 4
-    instance = read_instance(EXCEL_FILE)
+    random.seed(42)
+    try:
+        instance = read_instance(CONFIG['excel_file'], CONFIG['num_paperboys'])
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
     results = {}
 
-    run_simulated_annealing(instance, results)
-
+    # --- 1. Run Constructive Baselines ---
+    print("\n" + "=" * 40 + "\nRunning Baselines\n" + "=" * 40)
     heuristics = [
-        {'heuristic': random_constructive, 'name': 'Random Constructive'},
-        {'heuristic': nearest_neighbor, 'name': 'Nearest Neighbor'},
-        {'heuristic': "nearest_neighbor_RR", 'name': 'Nearest Neighbor RR'}
+        ("Random", random_constructive),
+        ("NN (Greedy)", lambda inst: nearest_neighbor(inst, round_robin=False)),
+        ("NN (Round Robin)", lambda inst: nearest_neighbor(inst, round_robin=True))
     ]
-    solution = None
-    for heuristic in heuristics:
-        run_heuristic(instance, heuristic['heuristic'], heuristic['name'], results)
 
-    # Export best solution
-    best_solution = min(results, key=lambda x: results[x]['Max Distance'])
-    export_solution(results[best_solution]['solution'], "optimized_routes.xlsx")
+    for name, func in heuristics:
+        print(f"Running {name}...")
+        sol = func(instance)
+        visualize_solution(instance, sol, name)
 
-    # Display results
-    print("\n" + "=" * 50)
-    print("Experimental Results:")
-    print("=" * 50)
-    for method, metrics in results.items():
-        print(f"{method + ':':<30} {metrics['Max Distance']:.1f} (Time: {metrics['Time']:.2f}s)")
+        # Apply local search to baseline
+        imp_sol = improve_solution_deterministically(instance, sol)
+        visualize_solution(instance, imp_sol, f"{name} + 2-opt")
+        results[f"{name} + 2-opt"] = imp_sol
+        print(f"  -> Raw: {sol['max_distance']:.1f} | Improved: {imp_sol['max_distance']:.1f}")
+
+    # --- 2. Run Metaheuristic (SA) ---
+    print("\n" + "=" * 40 + "\nRunning Simulated Annealing\n" + "=" * 40)
+    best_sa_sol = {'max_distance': float('inf')}
+    best_sa_hist = None
+
+    # Use the best baseline as starting point for SA
+    start_sol = min(results.values(), key=lambda x: x['max_distance'])
+
+    for i in range(CONFIG['num_sa_runs']):
+        print(f"SA Run {i + 1}/{CONFIG['num_sa_runs']}...")
+        # If multiple runs, maybe randomize start for i>0
+        current_start = start_sol if i == 0 else random_constructive(instance)
+        sa_sol, hist = simulated_annealing(instance, current_start)
+
+        if sa_sol['max_distance'] < best_sa_sol['max_distance']:
+            best_sa_sol = sa_sol
+            best_sa_hist = hist
+
+    results["Simulated Annealing"] = best_sa_sol
+    plot_sa_progress(best_sa_hist)
+    visualize_solution(instance, best_sa_sol, "Best SA Solution")
+
+    # --- 3. Final Comparison ---
+    print("\n" + "=" * 50 + "\nFinal Results Comparison\n" + "=" * 50)
+    sorted_results = sorted(results.items(), key=lambda x: x[1]['max_distance'])
+    for name, data in sorted_results:
+        print(
+            f"{name:<25} | Max Dist: {data['max_distance']:.1f} | Routes: {[int(d) for d in data['route_distances']]}")
+
+    best_overall = sorted_results[0][1]
+    pd.DataFrame([{'Paperboy': i + 1, 'Sequence': j + 1, 'Location': loc}
+                  for i, r in enumerate(best_overall['routes']) for j, loc in enumerate(r)]) \
+        .to_excel("optimized_routes.xlsx", index=False)
+    print(f"\nBest solution exported to optimized_routes.xlsx (Cost: {best_overall['max_distance']:.1f})")
+
 
 if __name__ == "__main__":
     main()
