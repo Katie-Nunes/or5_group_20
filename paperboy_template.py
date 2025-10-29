@@ -1,16 +1,15 @@
-# Best SA Cost found: 1453.0
-# {'routes': [[0, 82, 74, 77, 103, 99, 100, 110, 107, 108, 116, 119, 117, 120, 118, 115, 114, 113, 109, 105, 106, 98, 81, 68, 58, 57, 62, 66, 63, 64, 56, 49, 51, 79], [0, 85, 55, 45, 36, 30, 25, 13, 10, 15, 17, 22, 24, 32, 34, 44, 50, 53, 54, 60, 67, 70, 76, 75, 78, 80, 90, 92, 97, 112, 93, 94, 87, 88, 95, 102, 101], [0, 83, 84, 71, 86, 96, 111, 104, 89, 91, 72, 65, 59, 48, 47, 39, 37, 42, 40, 38, 26, 21, 18, 2, 5], [0, 73, 69, 61, 33, 14, 6, 1, 8, 3, 4, 11, 12, 28, 23, 20, 19, 16, 9, 7, 29, 46, 43, 41, 35, 27, 31, 52]], 'max_distance': 1453, 'route_distances': [1431, 1453, 1446, 1452]}
-
+# Best up to now is 1300 is inside current_best_route.xlsx
 import copy
 import math
 import random
 import time
 from typing import List, Dict, Tuple, Any, Callable
-
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import pickle
 
 # =========================================
 # CONFIGURATION
@@ -18,12 +17,12 @@ from tqdm import tqdm
 CONFIG = {
     'excel_file': "Excel/paperboy_instance.xlsx",
     'num_paperboys': 4,
-    'sa_iterations': 5,  # Iterations per temperature level
+    'sa_iterations': 10,  # 300 Iterations per temperature level
     'sa_temp': 100,  # Starting temperature
     'sa_cooling': 0.995,  # Cooling rate
     'sa_min_temp': 0.01,  # Stopping temperature
-    'num_sa_runs': 1,  # Number of multi-starts for SA
-    'show_plots': False  # Set to False to skip intermediate plots
+    'num_sa_runs': 2,  # 100 Number of multi-starts for SA
+    'show_plots': True  # Set to False to skip intermediate plots
 }
 
 
@@ -108,6 +107,7 @@ def random_constructive(instance: Dict[str, Any]) -> Dict[str, Any]:
         'route_distances': route_dists,
         'time': time.time() - start_time
     }
+
 
 
 def nearest_neighbor(instance: Dict[str, Any], round_robin: bool = False) -> Dict[str, Any]:
@@ -278,8 +278,9 @@ def simulated_annealing(instance: Dict[str, Any], initial_solution: Dict[str, An
 
 def visualize_solution(instance: Dict[str, Any], solution: Dict[str, Any], title: str):
     if not CONFIG['show_plots']: return
-    plt.figure(figsize=(10, 8))
-    cmap = plt.cm.get_cmap('tab10')
+    fig = plt.figure(figsize=(10, 8))
+    cmap = matplotlib.colormaps.get_cmap('tab10')
+
     for loc in instance['locations']:
         plt.scatter(loc['x'], loc['y'], c='grey', alpha=0.3, s=30)
     for i, route in enumerate(solution['routes']):
@@ -297,13 +298,13 @@ def visualize_solution(instance: Dict[str, Any], solution: Dict[str, Any], title
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.show()
 
+    return fig
 
 def plot_sa_progress(history: Dict[str, List]):
     if not CONFIG['show_plots'] or not history: return
     fig, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(history['iterations'], history['current_costs'], color='tab:blue', alpha=0.3, label='Current')
+    ax1.plot(history['iterations'], history['current_costs'], color='tab:blue', alpha=0.8, label='Current')
     ax1.plot(history['iterations'], history['best_costs'], color='navy', lw=2, label='Best Found')
     ax1.set_ylabel('Max Distance', color='tab:blue')
     ax2 = ax1.twinx()
@@ -311,8 +312,55 @@ def plot_sa_progress(history: Dict[str, List]):
     ax2.set_ylabel('Temperature', color='tab:red')
     plt.title("SA Progress")
     plt.show()
+    return fig
 
+def plot_combined_sa_progress(
+    histories: List[Dict[str, List]],
+    best_idx: int
+):
+    """
+    Plot the 'current_costs' over iterations for multiple SA runs in one figure,
+    with the run at histories[best_idx] highlighted.
+    """
+    if not CONFIG['show_plots'] or not histories:
+        return
 
+    # Set up dual-axis plot
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax2 = ax1.twinx()
+    cmap = matplotlib.colormaps.get_cmap('tab10')
+
+    for run_idx, history in enumerate(histories):
+        color = cmap(run_idx % 10)
+        is_best = (run_idx == best_idx)
+
+        ax1.plot(
+            history['iterations'],
+            history['current_costs'],
+            color=color,
+            lw= 3 if is_best else 1,
+            alpha=0.9 if is_best else 0.4,
+            label=f"{'Best' if is_best else None}"
+        )
+
+        ax2.plot(
+            history['iterations'],
+            history['temperatures'],
+            color='tab:red',
+            ls='--',
+            lw=1,
+            alpha=1
+        )
+
+    ax1.set_xlabel("Iteration")
+    ax1.set_ylabel("Current Max‐Distance", color='tab:blue')
+    ax2.set_ylabel("Temperature", color='tab:red')
+    ax1.legend(loc='upper right')
+    ax1.grid(alpha=0.3)
+    plt.title("SA Progress Across Runs (best run highlighted)")
+    plt.tight_layout()
+    plt.show()
+    return fig
 # =========================================
 # MAIN
 # =========================================
@@ -350,6 +398,7 @@ def main():
     print("\n" + "=" * 40 + "\nRunning Simulated Annealing\n" + "=" * 40)
     best_sa_sol = {'max_distance': float('inf')}
     best_sa_hist = None
+    sa_histories: List[Dict[str, List]] = []  # <-- collect each run's history
 
     # Use the best baseline as starting point for SA
     start_sol = min(results.values(), key=lambda x: x['max_distance'])
@@ -360,13 +409,26 @@ def main():
         current_start = start_sol if i == 0 else random_constructive(instance)
         sa_sol, hist = simulated_annealing(instance, current_start)
 
+        sa_histories.append(hist)
         if sa_sol['max_distance'] < best_sa_sol['max_distance']:
             best_sa_sol = sa_sol
             best_sa_hist = hist
 
+    with open('sa_history_file.pkl', 'wb') as f:
+        pickle.dump(sa_histories, f)
+
     results["Simulated Annealing"] = best_sa_sol
-    plot_sa_progress(best_sa_hist)
-    visualize_solution(instance, best_sa_sol, "Best SA Solution")
+    plt = plot_sa_progress(best_sa_hist)
+    plt.savefig('Images/best_sa_progress.png')
+
+    final_bests = [h['best_costs'][-1] for h in sa_histories]
+    best_idx = int(np.argmin(final_bests))
+
+    # now call:
+    plt = plot_combined_sa_progress(sa_histories, best_idx)
+    plt.savefig('Images/combined_sa_progress.png')
+    plt = visualize_solution(instance, best_sa_sol, "Best SA Solution")
+    plt.savefig('Images/best_sa_visualization.png')
 
     # --- 3. Final Comparison ---
     print("\n" + "=" * 50 + "\nFinal Results Comparison\n" + "=" * 50)
@@ -378,8 +440,8 @@ def main():
     best_overall = sorted_results[0][1]
     pd.DataFrame([{'Paperboy': i + 1, 'Sequence': j + 1, 'Location': loc}
                   for i, r in enumerate(best_overall['routes']) for j, loc in enumerate(r)]) \
-        .to_excel("optimized_routes.xlsx", index=False)
-    print(f"\nBest solution exported to optimized_routes.xlsx (Cost: {best_overall['max_distance']:.1f})")
+        .to_excel("Excel/best_overall_route.xlsx", index=False)
+    print(f"\nBest solution exported to Excel/best_overall_route.xlsx (Cost: {best_overall['max_distance']:.1f})")
 
 
 if __name__ == "__main__":
