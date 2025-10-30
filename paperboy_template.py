@@ -17,11 +17,11 @@ import pickle
 CONFIG = {
     'excel_file': "Excel/paperboy_instance.xlsx",
     'num_paperboys': 4,
-    'sa_iterations': 10,  # 300 Iterations per temperature level
+    'sa_iterations': 300,  # 300 Iterations per temperature level
     'sa_temp': 100,  # Starting temperature
     'sa_cooling': 0.995,  # Cooling rate
     'sa_min_temp': 0.01,  # Stopping temperature
-    'num_sa_runs': 2,  # 100 Number of multi-starts for SA
+    'num_sa_runs': 69,  # 100 Number of multi-starts for SA
     'show_plots': True  # Set to False to skip intermediate plots
 }
 
@@ -84,7 +84,6 @@ def evaluate_solution(instance: Dict[str, Any], routes: List[List[int]]) -> Tupl
     route_dists = [get_route_distance(instance, route) for route in routes]
     return (max(route_dists) if route_dists else 0.0), route_dists
 
-
 # =========================================
 # CONSTRUCTIVE HEURISTICS
 # =========================================
@@ -107,7 +106,6 @@ def random_constructive(instance: Dict[str, Any]) -> Dict[str, Any]:
         'route_distances': route_dists,
         'time': time.time() - start_time
     }
-
 
 
 def nearest_neighbor(instance: Dict[str, Any], round_robin: bool = False) -> Dict[str, Any]:
@@ -155,7 +153,6 @@ def nearest_neighbor(instance: Dict[str, Any], round_robin: bool = False) -> Dic
         'route_distances': route_dists,
         'time': time.time() - start_time
     }
-
 
 # =========================================
 # LOCAL SEARCH & METAHEURISTICS
@@ -271,7 +268,6 @@ def simulated_annealing(instance: Dict[str, Any], initial_solution: Dict[str, An
             temp *= CONFIG['sa_cooling']
     return best_sol, history
 
-
 # =========================================
 # VISUALIZATION & IO
 # =========================================
@@ -301,6 +297,7 @@ def visualize_solution(instance: Dict[str, Any], solution: Dict[str, Any], title
 
     return fig
 
+
 def plot_sa_progress(history: Dict[str, List]):
     if not CONFIG['show_plots'] or not history: return
     fig, ax1 = plt.subplots(figsize=(10, 6))
@@ -313,6 +310,7 @@ def plot_sa_progress(history: Dict[str, List]):
     plt.title("SA Progress")
     plt.show()
     return fig
+
 
 def plot_combined_sa_progress(
     histories: List[Dict[str, List]],
@@ -361,6 +359,7 @@ def plot_combined_sa_progress(
     plt.tight_layout()
     plt.show()
     return fig
+
 # =========================================
 # MAIN
 # =========================================
@@ -440,8 +439,8 @@ def main():
     best_overall = sorted_results[0][1]
     pd.DataFrame([{'Paperboy': i + 1, 'Sequence': j + 1, 'Location': loc}
                   for i, r in enumerate(best_overall['routes']) for j, loc in enumerate(r)]) \
-        .to_excel("Excel/best_overall_route.xlsx", index=False)
-    print(f"\nBest solution exported to Excel/best_overall_route.xlsx (Cost: {best_overall['max_distance']:.1f})")
+        .to_excel("Excel/current_bestest_of_best_route_1286.xlsx", index=False)
+    print(f"\nBest solution exported to Excel/current_bestest_of_best_route_1286.xlsx (Cost: {best_overall['max_distance']:.1f})")
 
 
 if __name__ == "__main__":
