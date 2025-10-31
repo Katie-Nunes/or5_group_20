@@ -1,4 +1,4 @@
-# Best up to now is 1300 is inside current_best_route.xlsx
+
 import copy
 import math
 import random
@@ -17,12 +17,14 @@ import pickle
 CONFIG = {
     'excel_file': "Excel/paperboy_instance.xlsx",
     'num_paperboys': 4,
-    'sa_iterations': 300,  # 300 Iterations per temperature level
-    'sa_temp': 100,  # Starting temperature
-    'sa_cooling': 0.995,  # Cooling rate
-    'sa_min_temp': 0.01,  # Stopping temperature
-    'num_sa_runs': 69,  # 100 Number of multi-starts for SA
-    'show_plots': True  # Set to False to skip intermediate plots
+    'sa_iterations': 10,      # iterations per temperature level
+    'sa_temp': 100,            # starting temperature
+    'sa_cooling': 0.995,       # cooling rate (alpha)
+    'sa_min_temp': 0.01,       # stopping temperature
+    'num_sa_runs': 5,         # number of multi-starts for SA
+    'show_plots': True,        # set to False to skip intermediate plots
+    'use_capacity': False,      # our new bag-capacity evaluation switch
+    'Q': 50                    # capacity (papers per depot visit)
 }
 
 
@@ -75,14 +77,50 @@ def get_route_distance(instance: Dict[str, Any], route: List[int]) -> float:
     dist_matrix = instance['dist_matrix']
     return sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
 
+def get_route_distance_with_capacity(instance: Dict[str, Any], route: List[int], Q: int) -> float:
+    """
+    Section 4.2 rule: after every Q-th delivery since the last depot,
+    replace the direct hop i->j with i->depot + depot->j.
+    Route format here already starts with depot at index 0.
+    No explicit reload time; extra cost is travel distance only.
+    """
+    D = instance['dist_matrix']
+    depot = instance['depot']
+
+    # no customer assigned on this route
+    if len(route) < 2:
+        return 0.0
+
+    # depot -> first customer
+    L = D[depot][route[1]]
+
+    # t counts deliveries already made when leaving route[t]
+    # customers live at indices 1..len(route)-1
+    deliveries = 1  # we just served route[1]
+    for t in range(1, len(route) - 1):
+        i, j = route[t], route[t + 1]
+        if deliveries % Q == 0:
+            # bag just emptied after serving i: detour via depot before j
+            L += D[i][depot] + D[depot][j]
+        else:
+            # go directly
+            L += D[i][j]
+        deliveries += 1
+    return L
 
 def evaluate_solution(instance: Dict[str, Any], routes: List[List[int]]) -> Tuple[float, List[float]]:
     """
-    Calculate max route distance (objective) and individual route distances.
+    Calculate objective (max route distance) and per-route distances.
     Objective: Minimax (minimize the longest single route).
+    If CONFIG['use_capacity'] is True, use the bag-capacity rule (Section 4.2).
     """
-    route_dists = [get_route_distance(instance, route) for route in routes]
+    if CONFIG.get('use_capacity', False):
+        Q = CONFIG.get('Q', 10**9)
+        route_dists = [get_route_distance_with_capacity(instance, r, Q) for r in routes]
+    else:
+        route_dists = [get_route_distance(instance, route) for route in routes]
     return (max(route_dists) if route_dists else 0.0), route_dists
+
 
 # =========================================
 # CONSTRUCTIVE HEURISTICS
@@ -338,7 +376,7 @@ def plot_combined_sa_progress(
             color=color,
             lw= 3 if is_best else 1,
             alpha=0.9 if is_best else 0.4,
-            label=f"{'Best' if is_best else None}"
+            label=f"{'Best' if is_best else run_idx+1}"
         )
 
         ax2.plot(
@@ -359,6 +397,56 @@ def plot_combined_sa_progress(
     plt.tight_layout()
     plt.show()
     return fig
+
+
+def visualize_from_file(solution_file: str):
+    """
+    Reads a solution from an Excel file and visualizes it.
+    Expects the same format as exported by the main script:
+        - Columns: Paperboy, Sequence, Location
+        - Routes are sorted by Paperboy and Sequence
+    """
+    global CONFIG
+
+    try:
+        # 1. Read the instance data
+        instance = read_instance(CONFIG['excel_file'], CONFIG['num_paperboys'])
+    except Exception as e:
+        print(f"Error reading instance: {e}")
+        return
+
+    try:
+        # 2. Read the solution file
+        df = pd.read_excel(solution_file)
+        print(f"Successfully read solution from {solution_file}")
+
+        # 3. Reconstruct routes from the DataFrame
+        df.sort_values(by=['Paperboy', 'Sequence'], inplace=True)
+        routes = []
+        grouped = df.groupby('Paperboy')
+        for _, group in grouped:
+            route = group['Location'].tolist()
+            routes.append(route)
+
+        # 4. Evaluate the solution (using current CONFIG settings)
+        max_dist, route_dists = evaluate_solution(instance, routes)
+        solution_dict = {
+            'routes': routes,
+            'max_distance': max_dist,
+            'route_distances': route_dists
+        }
+
+        # 5. Visualize
+        title = f"Solution from {solution_file}\nBest Cost: {max_dist:.1f}"
+        print(f"\nVisualizing solution...\nMax Distance: {max_dist:.1f}")
+        print(f"Route Distances: {[f'{d:.1f}' for d in route_dists]}")
+        visualize_solution(instance, solution_dict, title)
+        plt.show()
+
+    except Exception as e:
+        print(f"Error processing solution file: {e}")
+
+
 
 # =========================================
 # MAIN
@@ -416,6 +504,7 @@ def main():
     with open('sa_history_file.pkl', 'wb') as f:
         pickle.dump(sa_histories, f)
 
+
     results["Simulated Annealing"] = best_sa_sol
     plt = plot_sa_progress(best_sa_hist)
     plt.savefig('Images/best_sa_progress.png')
@@ -439,8 +528,8 @@ def main():
     best_overall = sorted_results[0][1]
     pd.DataFrame([{'Paperboy': i + 1, 'Sequence': j + 1, 'Location': loc}
                   for i, r in enumerate(best_overall['routes']) for j, loc in enumerate(r)]) \
-        .to_excel("Excel/current_bestest_of_best_route_1286.xlsx", index=False)
-    print(f"\nBest solution exported to Excel/current_bestest_of_best_route_1286.xlsx (Cost: {best_overall['max_distance']:.1f})")
+        .to_excel("Excel/best_route.xlsx", index=False)
+    print(f"\nBest solution exported to Excel/best_route.xlsx (Cost: {best_overall['max_distance']:.1f})")
 
 
 if __name__ == "__main__":

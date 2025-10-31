@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # CONFIGURATION
 # =========================================
 CONFIG = {
-    'excel_file': str(BASE_DIR / 'paperboy_instance.xlsx'),  # file sits next to this script
+    'excel_file': "Excel/paperboy_instance.xlsx",
     'num_paperboys': 4,
     'sa_iterations': 300,      # iterations per temperature level
     'sa_temp': 100,            # starting temperature
@@ -59,6 +59,7 @@ def read_instance(filename: str, num_paperboys: int) -> Dict[str, Any]:
     }
     instance['dist_matrix'] = _compute_distance_matrix(instance)
     return instance
+
 
 def _compute_distance_matrix(instance: Dict[str, Any]) -> List[List[float]]:
     """Compute Manhattan distance matrix for all locations."""
@@ -111,13 +112,14 @@ def get_route_distance_with_capacity(instance: Dict[str, Any], route: List[int],
 def evaluate_solution(instance: Dict[str, Any], routes: List[List[int]]) -> Tuple[float, List[float]]:
     """
     Calculate objective (max route distance) and per-route distances.
+    Objective: Minimax (minimize the longest single route).
     If CONFIG['use_capacity'] is True, use the bag-capacity rule (Section 4.2).
     """
     if CONFIG.get('use_capacity', False):
         Q = CONFIG.get('Q', 10**9)
         route_dists = [get_route_distance_with_capacity(instance, r, Q) for r in routes]
     else:
-        route_dists = [get_route_distance(instance, r) for r in routes]
+        route_dists = [get_route_distance(instance, route) for route in routes]
     return (max(route_dists) if route_dists else 0.0), route_dists
 
 
